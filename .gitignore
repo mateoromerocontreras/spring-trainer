@@ -1,0 +1,13 @@
+# IDE / Editor files
+.idea/
+*.iml
+.vscode/
+.DS_Store
+
+# Build & Dependency artifacts (Spring / Java)
+target/
+build/
+.gradle/
+*.class
+*.jar
+*.war
