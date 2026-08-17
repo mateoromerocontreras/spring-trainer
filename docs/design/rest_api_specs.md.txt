@@ -1,0 +1,292 @@
+ ### 1. REST API Specification (Contract First)
+  #### POST /api/v1/auth/tenants/{tenantCode}/register
+  Registers a new gym client under the specified tenant scope (functional_and_non_functional.md:7,
+  domain_model.md:127).
+  #### Request Body (application/json):
+
+    {
+      "email": "client@example.com",
+      "password": "SecurePassword123!",
+      "fullName": "Juan Perez",
+      "phoneNumber": "+5491122334455",
+      "emergencyContact": "Maria Perez (+5491199887766)"
+    }
+
+  #### Response Responses:
+  • 201 Created (Success):
+    {
+      "clientId": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+      "tenantCode": "GYM_CENTRAL",
+      "email": "client@example.com",
+      "fullName": "Juan Perez",
+      "accountStatus": "PENDING_PAYMENT",
+      "accessToken": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+      "tokenType": "Bearer",
+      "nextStep": "SELECT_MEMBERSHIP_PLAN"
+    }
+  • 400 Bad Request: Validation failure (e.g., weak password, invalid email format).
+  • 404 Not Found: Gym tenant code does not exist.
+  • 409 Conflict: Email is already registered within this tenant.
+  • 422 Unprocessable Entity: Gym tenant is inactive.
+  ──────
+  ### 2. Design Class Diagram (DCD)
+  Following Clean Architecture layers (Web / Application / Domain / Persistence):
+    classDiagram
+        direction TB
+
+        package "Presentation Layer (Web)" {
+            class ClientAuthController {
+                -RegisterClientUseCase registerClientUseCase
+                +register(tenantCode: String, request: RegisterClientRequest)
+  ResponseEntity~ClientRegistrationResponse~
+            }
+            class RegisterClientRequest {
+                +email: String
+                +password: String
+                +fullName: String
+                +phoneNumber: String
+                +emergencyContact: String
+            }
+            class ClientRegistrationResponse {
+                +clientId: UUID
+                +tenantCode: String
+                +email: String
+                +fullName: String
+                +accountStatus: AccountStatus
+                +accessToken: String
+                +tokenType: String
+                +nextStep: String
+            }
+        }
+
+        package "Application Layer (Use Cases)" {
+            class RegisterClientUseCase {
+                <<interface>>
+                +execute(command: RegisterClientCommand) ClientRegistrationResult
+            }
+            class ClientRegistrationService {
+                -GymTenantRepository tenantRepo
+                -ClientRepository clientRepo
+                -SubscriptionRepository subscriptionRepo
+                -PasswordEncoder passwordEncoder
+                -JwtTokenProvider jwtTokenProvider
+                +execute(command: RegisterClientCommand) ClientRegistrationResult
+            }
+            class RegisterClientCommand {
+                +tenantCode: String
+                +email: String
+                +rawPassword: String
+                +fullName: String
+                +phoneNumber: String
+                +emergencyContact: String
+            }
+        }
+
+        package "Domain Layer" {
+            class GymTenant {
+                -UUID id
+                -String tenantCode
+                -String gymName
+                -Boolean isActive
+                +isRegistrationAllowed() Boolean
+            }
+            class Client {
+                -UUID id
+                -UUID tenantId
+                -String email
+                -String passwordHash
+                -String fullName
+                -String phoneNumber
+                -String emergencyContact
+                -LocalDate enrollmentDate
+                -AccountStatus accountStatus
+                +static create(tenantId: UUID, email: String, passwordHash: String, fullName: String,
+  phone: String, emergency: String) Client
+            }
+            class Subscription {
+                -UUID id
+                -UUID tenantId
+                -UUID clientId
+                -SubscriptionStatus status
+                -Boolean isInDebt
+                -LocalDate currentPeriodEnd
+                +static createInitialPending(tenantId: UUID, clientId: UUID) Subscription
+            }
+            class AccountStatus {
+                <<enumeration>>
+                PENDING_PAYMENT
+                ACTIVE
+                SUSPENDED
+                INACTIVE
+            }
+            class SubscriptionStatus {
+                <<enumeration>>
+                PENDING
+                ACTIVE
+                EXPIRED
+                CANCELLED
+            }
+        }
+
+        package "Infrastructure & Persistence Layer" {
+            class ClientRepository {
+                <<interface>>
+                +existsByTenantIdAndEmail(tenantId: UUID, email: String) Boolean
+                +save(client: Client) Client
+            }
+            class GymTenantRepository {
+                <<interface>>
+                +findByTenantCode(code: String) Optional~GymTenant~
+            }
+            class SubscriptionRepository {
+                <<interface>>
+                +save(subscription: Subscription) Subscription
+            }
+            class JwtTokenProvider {
+                +generateToken(clientId: UUID, tenantId: UUID, role: String) String
+            }
+            class PasswordEncoder {
+                <<interface>>
+                +encode(rawPassword: CharSequence) String
+            }
+        }
+
+        ClientAuthController ..> RegisterClientUseCase
+        ClientAuthController ..> RegisterClientRequest
+        ClientRegistrationService ..|> RegisterClientUseCase
+        ClientRegistrationService ..> RegisterClientCommand
+        ClientRegistrationService --> GymTenantRepository
+        ClientRegistrationService --> ClientRepository
+        ClientRegistrationService --> SubscriptionRepository
+        ClientRegistrationService --> PasswordEncoder
+        ClientRegistrationService --> JwtTokenProvider
+        ClientRegistrationService --> Client
+        ClientRegistrationService --> Subscription
+  ──────
+  ### 3. Detailed Sequence Diagram (White-Box Interaction)
+
+    sequenceDiagram
+        autonumber
+        actor Mobile as Mobile App Client
+        participant Controller as ClientAuthController
+        participant Service as ClientRegistrationService
+        participant TenantRepo as GymTenantRepository
+        participant ClientRepo as ClientRepository
+        participant Encoder as PasswordEncoder (BCrypt)
+        participant SubRepo as SubscriptionRepository
+        participant JWT as JwtTokenProvider
+        participant DB as PostgreSQL Database
+
+        Mobile->>Controller: POST /api/v1/auth/tenants/{tenantCode}/register (JSON)
+        Controller->>Service: execute(RegisterClientCommand)
+
+        Service->>TenantRepo: findByTenantCode(tenantCode)
+        TenantRepo->>DB: SELECT * FROM gym_tenants WHERE tenant_code = ?
+        DB-->>TenantRepo: GymTenant record
+        TenantRepo-->>Service: GymTenant instance
+
+        alt Tenant Not Found or Inactive
+            Service-->>Controller: throw TenantNotFoundException / TenantInactiveException
+            Controller-->>Mobile: 404 Not Found / 422 Unprocessable Entity
+        end
+
+        Service->>ClientRepo: existsByTenantIdAndEmail(tenant.id, email)
+        ClientRepo->>DB: SELECT count(1) FROM clients WHERE tenant_id = ? AND email = ?
+        DB-->>ClientRepo: count
+        ClientRepo-->>Service: boolean (true/false)
+
+        alt Email Already Exists in Tenant
+            Service-->>Controller: throw EmailAlreadyRegisteredException
+            Controller-->>Mobile: 409 Conflict ("Email already registered for this gym")
+        end
+
+        Service->>Encoder: encode(rawPassword)
+        Encoder-->>Service: passwordHash ($2a$12$...)
+
+        Service->>Service: Client.create(tenant.id, email, passwordHash, ...)
+        Service->>ClientRepo: save(client)
+        ClientRepo->>DB: INSERT INTO clients (...) VALUES (...)
+        DB-->>ClientRepo: Persisted Client
+
+        Service->>Service: Subscription.createInitialPending(tenant.id, client.id)
+        Service->>SubRepo: save(subscription)
+        SubRepo->>DB: INSERT INTO subscriptions (...) VALUES (...)
+        DB-->>SubRepo: Persisted Subscription
+
+        Service->>JWT: generateToken(client.id, tenant.id, "ROLE_CLIENT")
+        JWT-->>Service: jwtTokenString
+
+        Service-->>Controller: ClientRegistrationResult(...)
+        Controller-->>Mobile: 201 Created (ClientRegistrationResponse + JWT)
+  ──────
+  ### 4. Physical Database Schema (PostgreSQL DDL)
+
+    -- 1. Tenants Table
+    CREATE TABLE IF NOT EXISTS gym_tenants (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_code VARCHAR(32) NOT NULL UNIQUE,
+        gym_name VARCHAR(128) NOT NULL,
+        subdomain VARCHAR(64) UNIQUE,
+        slot_booking_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        cancellation_window_hours INT NOT NULL DEFAULT 24,
+        monthly_debt_cutoff_day INT NOT NULL DEFAULT 10,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    -- 2. Clients Table (Scoped by Tenant)
+    CREATE TABLE IF NOT EXISTS clients (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES gym_tenants(id) ON DELETE RESTRICT,
+        email VARCHAR(255) NOT NULL,
+        password_hash VARCHAR(255) NOT NULL,
+        full_name VARCHAR(128) NOT NULL,
+        phone_number VARCHAR(32) NOT NULL,
+        emergency_contact VARCHAR(255) NOT NULL,
+        enrollment_date DATE NOT NULL DEFAULT CURRENT_DATE,
+        account_status VARCHAR(32) NOT NULL DEFAULT 'PENDING_PAYMENT',
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT uq_tenant_client_email UNIQUE (tenant_id, email)
+    );
+
+    CREATE INDEX idx_clients_tenant_id ON clients(tenant_id);
+    CREATE INDEX idx_clients_email ON clients(email);
+
+    -- 3. Initial Subscriptions Table
+    CREATE TABLE IF NOT EXISTS subscriptions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id UUID NOT NULL REFERENCES gym_tenants(id) ON DELETE RESTRICT,
+        client_id UUID NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+        membership_plan_id UUID NULL, -- Assigned during UC-02 plan selection
+        status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+        payment_type VARCHAR(32) NULL, -- 'RECURRING' | 'MANUAL'
+        is_in_debt BOOLEAN NOT NULL DEFAULT FALSE,
+        external_mp_preapproval_id VARCHAR(128) NULL,
+        start_date DATE NULL,
+        current_period_end DATE NULL,
+        created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX idx_subscriptions_tenant_client ON subscriptions(tenant_id, client_id);
+  ──────
+  ### 5. Agile Vertical Slice: Construction Checklist for UC-01
+
+  To start coding immediately:
+
+  1. Bootstrap Project:
+      • Initialize Spring Boot project (Kotlin / Java 17+, Spring Web, Spring Security, Spring Data JPA,
+      PostgreSQL Driver, Validation, Flyway/Liquibase).
+  2. Domain & Persistence:
+      • Create entities GymTenant, Client, Subscription and Enums AccountStatus, SubscriptionStatus.
+      • Create Spring Data interfaces GymTenantRepository, ClientRepository, SubscriptionRepository.
+  3. Application Service:
+      • Implement @Service @Transactional ClientRegistrationService with tenant check, email uniqueness
+      check, BCrypt password hashing, and initial pending subscription creation.
+  4. Security & Controller:
+      • Configure Spring Security with BCryptPasswordEncoder and permit POST /api/v1/auth/** publicly.
+      • Implement ClientAuthController with @Valid input validation.
+  5. Verification Tests:
+      • Unit test for ClientRegistrationService testing happy path & duplicate email conflict.
+      • @SpringBootTest / MockMvc integration test verifying HTTP 201 and PostgreSQL persistence.

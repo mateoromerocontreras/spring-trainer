@@ -3,6 +3,7 @@
 *.iml
 .vscode/
 .DS_Store
+.project
 
 # Build & Dependency artifacts (Spring / Java)
 target/
