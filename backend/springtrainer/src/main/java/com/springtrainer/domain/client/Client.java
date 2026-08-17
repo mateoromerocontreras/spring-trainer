@@ -1,6 +1,8 @@
-package com.springtrainer.domain;
+package com.springtrainer.domain.client;
 
 import java.time.LocalDate;
+
+import com.springtrainer.domain.subscription.AccountStatus;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;

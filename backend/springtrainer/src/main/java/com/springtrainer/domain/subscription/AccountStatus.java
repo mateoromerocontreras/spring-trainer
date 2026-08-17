@@ -1,4 +1,4 @@
-package com.springtrainer.domain;
+package com.springtrainer.domain.subscription;
 
 public enum AccountStatus {
 	PENDING,
